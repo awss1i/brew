@@ -5,8 +5,8 @@
 # $4 System root directory (unused)
 set -euo pipefail
 
-# Use system tools and the Git supplied by the Command Line Tools or Xcode.
-export PATH="/Library/Developer/CommandLineTools/usr/bin:/Applications/Xcode.app/Contents/Developer/usr/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+# Use system tools without triggering developer tool installation prompts.
+export PATH="/usr/bin:/bin:/usr/sbin:/sbin"
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" &>/dev/null && pwd -P)"
 if [[ -f "${script_dir}/macos_user.sh" ]]
@@ -91,6 +91,17 @@ then
   exit 1
 fi
 
+if [[ -z "${HOMEBREW_NO_SUDO:-}" ]] && command -v sudo &>/dev/null
+then
+  user_command=(sudo -u "${homebrew_pkg_user}")
+elif [[ "$(id -u)" == 0 ]]
+then
+  user_command=(login -f -l -q "${homebrew_pkg_user}")
+else
+  echo "Switching to the Homebrew installation user without sudo requires root." >&2
+  exit 1
+fi
+
 # set permissions
 refuse_symlinked_directories
 chmod -h ug=rwx Caskroom Cellar Frameworks bin etc include lib opt sbin share var
@@ -101,20 +112,29 @@ chmod -h ug=rwx Caskroom Cellar Frameworks bin etc include lib opt sbin share va
   enter_managed_directory linked "${prefix_directory}/var/homebrew/linked" var/homebrew/linked
   chmod ug=rwx .
 )
-chown -R "${homebrew_pkg_user}:admin" .
+homebrew_pkg_group="admin"
+if [[ " $(id -Gn "${homebrew_pkg_user}") " != *" admin "* ]]
+then
+  homebrew_pkg_group="$(id -gn "${homebrew_pkg_user}")"
+fi
+chown -R "${homebrew_pkg_user}:${homebrew_pkg_group}" .
 
-git_as_user() {
-  sudo -u "${homebrew_pkg_user}" /usr/bin/env \
-    HOME="${homebrew_directory}" GIT_CONFIG_GLOBAL=/dev/null PATH="${PATH}" \
-    git -c core.hooksPath=/dev/null "$@"
-}
-
-# reset Git repository
 rm -rf "${homebrew_directory}/.git/hooks" "${homebrew_directory}/.gitconfig" "${homebrew_directory}/.config/git"
-latest_tag="$(git_as_user -C "${homebrew_directory}" tag --list --sort="-version:refname" | head -n1)"
-git_as_user -C "${homebrew_directory}" checkout --force -B stable
-git_as_user -C "${homebrew_directory}" reset --hard "${latest_tag}"
-git_as_user -C "${homebrew_directory}" clean -f -d
+# The package already contains a stable checkout; reset it when Git is available.
+if developer_dir="$(xcode-select --print-path 2>/dev/null)" &&
+   [[ -n "${developer_dir}" && "${developer_dir}" != / && -x "${developer_dir}/usr/bin/git" ]]
+then
+  git_as_user() {
+    "${user_command[@]}" /usr/bin/env \
+      HOME="${homebrew_directory}" GIT_CONFIG_GLOBAL=/dev/null PATH="${PATH}" \
+      "${developer_dir}/usr/bin/git" -c core.hooksPath=/dev/null "$@"
+  }
+
+  latest_tag="$(git_as_user -C "${homebrew_directory}" tag --list --sort="-version:refname" | head -n1)"
+  git_as_user -C "${homebrew_directory}" checkout --force -B stable
+  git_as_user -C "${homebrew_directory}" reset --hard "${latest_tag}"
+  git_as_user -C "${homebrew_directory}" clean -f -d
+fi
 
 # move API cache to ~/Library/Caches/Homebrew
 user_home_dir="$(homebrew-user-home "${homebrew_pkg_user}")" ||
@@ -126,8 +146,8 @@ user_cache_dir="${user_home_dir}/Library/Caches/Homebrew"
 user_api_cache_dir="${user_cache_dir}/api"
 # Seed the cache as the install user: as root, `cp` follows a symlink planted at the
 # destination, and the `chown -R` this removes would reach anything hard-linked into the tree.
-sudo -u "${homebrew_pkg_user}" mkdir -vp "${user_api_cache_dir}"
-sudo -u "${homebrew_pkg_user}" cp -vpR "${homebrew_directory}/cache_api/." "${user_api_cache_dir}"
+"${user_command[@]}" mkdir -vp "${user_api_cache_dir}"
+"${user_command[@]}" cp -vpR "${homebrew_directory}/cache_api/." "${user_api_cache_dir}"
 rm -vrf "${homebrew_directory}/cache_api"
 
 # add Homebrew to the default PATH

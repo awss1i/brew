@@ -138,6 +138,9 @@ jobs:
 
           echo "version=${homebrew_version}" >> "${GITHUB_OUTPUT}"
 
+          # Ship a stable checkout for hosts without Git or developer tools.
+          git -C brew checkout --force -B stable
+
       - name: Prepare Homebrew API cache for package
         run: |
           package_api_cache="${RUNNER_TEMP}/homebrew-api-cache"
